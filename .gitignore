@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[oc]
+.venv/
+.pytest_cache/
+build/
+dist/
+*.egg-info
+
+# Secrets (never commit). .env.* also catches .env.txt, which Windows Notepad creates.
+.env
+.env.*
+!.env.example
+
+# Download cache from the data build (large, rebuildable). The built database
+# data/tickertutor.duckdb IS committed so the deployed app has its data.
+data/cache/
+# Only the main database is committed (test or scratch builds stay local)
+data/*.duckdb
+!data/tickertutor.duckdb
+data/*.tmp
+data/*.tmp.duckdb
+# A refreshed database waiting to replace the main file (see tickertutor/refresh.py)
+data/*.new-*.duckdb
+data/*.wal
+*.log
+.DS_Store
