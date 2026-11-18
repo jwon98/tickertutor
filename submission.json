@@ -1,5 +1,5 @@
 {
-  "deploy_url": "https://REPLACE-WITH-YOUR-CLOUD-RUN-URL.run.app",
+  "deploy_url": "https://tickertutor-1083514079301.us-east1.run.app/",
   "authors": ["jjw2206"],
   "path": "research"
 }
