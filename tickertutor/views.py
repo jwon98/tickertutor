@@ -9,6 +9,7 @@ from . import indexes as idx
 from . import indicators
 from .data import DataError, clean, db, last_day, ticker_or_error
 from .sectors import SECTOR_INFO
+from .sources.news import about
 
 SORTS = {
     "market_cap": "c.market_cap DESC NULLS LAST", "ticker": "c.ticker ASC", "change_1d": "s.change_1d DESC NULLS LAST",
@@ -179,8 +180,8 @@ def stock(ticker: str) -> dict:
     filings = db().rows("SELECT form, filed, items, item_names, url FROM filings WHERE ticker = ? ORDER BY filed DESC "
                         "LIMIT 12", [t])
     moves = db().rows("SELECT * FROM recent_moves WHERE ticker = ? ORDER BY date DESC", [t])
-    news = db().rows("SELECT headline, summary, source, url, published, provider FROM news WHERE ticker = ? "
-                     "ORDER BY published DESC LIMIT 8", [t])
+    news = about(db().rows("SELECT headline, summary, source, url, published, provider FROM news WHERE ticker = ? "
+                           "ORDER BY published DESC LIMIT 30", [t]), comp["name"], t)[:8]
     peers = db().rows(f"SELECT {ROW_COLS} FROM companies c JOIN snapshot s USING (ticker) WHERE c.sector = ? "
                       "AND c.ticker <> ? ORDER BY c.market_cap DESC NULLS LAST LIMIT 6", [comp["sector"], t])
     sector = db().rows("SELECT * FROM sectors WHERE sector = ?", [comp["sector"]])
@@ -356,8 +357,10 @@ def _near(headlines: list[dict], day: str, before: int = 1, after: int = 3) -> l
 
 
 def attach_headlines(moves: list[dict], by_ticker: dict[str, list[dict]], per_move: int = 2) -> None:
+    """Each move gets the headlines from around its day that name the company (in the headline first)."""
     for mv in moves:
-        mv["headlines"] = _near(by_ticker.get(mv["ticker"], []), mv["date"])[:per_move]
+        near = _near(by_ticker.get(mv["ticker"], []), mv["date"])
+        mv["headlines"] = about(near, mv.get("name") or "", mv["ticker"])[:per_move]
 
 
 def news_page() -> dict:
@@ -367,8 +370,8 @@ def news_page() -> dict:
     for mv in moves:   # how many of the stock's ordinary days this one move was worth
         daily = (mv.get("vol_1y") or 0) / np.sqrt(252)
         mv["times_typical"] = abs(mv["ret_1d"]) / daily if daily and mv.get("ret_1d") is not None else None
-    stored = db().rows("SELECT n.ticker, n.headline, n.summary, n.source, n.url, n.published, n.provider, c.name "
-                       "FROM news n LEFT JOIN companies c USING (ticker) ORDER BY n.published DESC")
+    stored = db().rows("SELECT ticker, headline, summary, source, url, published, provider FROM news "
+                       "WHERE ticker <> '_market' ORDER BY published DESC")
     by_ticker: dict[str, list[dict]] = {}
     for h in stored:
         by_ticker.setdefault(h["ticker"], []).append(h)
@@ -381,55 +384,38 @@ def news_page() -> dict:
     laggards = db().rows(f"SELECT {ROW_COLS} FROM companies c JOIN snapshot s USING (ticker) "
                          "ORDER BY s.ret_1m ASC NULLS LAST LIMIT 6")
     m = db().meta()
-    # Market-wide headlines first. If the snapshot has few, fill in with company ones (each headline once).
-    seen, headlines = set(), []
-    for h in [h for h in stored if h["ticker"] == "_market"] + [h for h in stored if h["ticker"] != "_market"]:
-        key = (h.get("headline") or "").lower()[:90]
-        if key and key not in seen:
-            seen.add(key)
-            headlines.append(h)
     return {"moves": moves, "events": events, "sectors": sectors, "leaders": leaders, "laggards": laggards,
-            "week": week_movers(6), "headlines": headlines[:24], "market": m.get("market", {}),
+            "week": week_movers(6), "market": m.get("market", {}),
             "as_of": m.get("as_of"), "built_at": m.get("built_at")}
 
 
-def live_headlines(max_tickers: int = 12) -> dict:
-    """Fresh headlines for the news page: the market, plus each stock in "Big moves lately" around the day it
-    moved. Falls back to the headlines saved with the last data build when the live feed isn't available."""
+def live_headlines(max_tickers: int = 24) -> dict:
+    """Fresh headlines for each stock in "Big moves lately", from around the day it moved. Moves the live feed
+    can't reach keep the headlines saved with the last data build."""
+    from concurrent.futures import ThreadPoolExecutor
     from datetime import datetime, timezone
 
     from . import config
     from .sources import SourceError, news
 
     page = news_page()
-    if db().meta().get("synthetic"):
-        return {"live": False, "provider": "demo snapshot", "market": page["headlines"][:18], "moves": {},
-                "fetched_at": None}
-    market, provider, live = [], "", False
-    try:
-        market = [{**h, "ticker": "_market"} for h in news.market_news()]
-        provider, live = (market[0]["provider"] if market else ""), bool(market)
-    except SourceError:
-        pass
-    moves: dict[str, list[dict]] = {}
-    if config.FINNHUB_API_KEY:   # the keyless fallback is too slow to call once per stock
-        seen: list[str] = []
-        for mv in page["moves"]:
-            if mv["ticker"] not in seen:
-                seen.append(mv["ticker"])
-        by_ticker = {}
-        for t in seen[:max_tickers]:
-            try:
-                by_ticker[t] = news.company_news(t, days=35)
-                live = True
-            except SourceError:
-                continue
-        subset = [mv for mv in page["moves"] if mv["ticker"] in by_ticker]
-        attach_headlines(subset, by_ticker)
-        moves = {f"{mv['ticker']}|{mv['date']}": mv["headlines"] for mv in subset if mv["headlines"]}
-    return {"live": live, "provider": provider or ("Finnhub" if live else "snapshot"),
-            "market": market[:18] or page["headlines"][:18], "moves": moves,
-            "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds") if live else None}
+    if db().meta().get("synthetic") or not config.FINNHUB_API_KEY:   # the keyless fallback is too slow per stock
+        return {"live": False, "provider": "snapshot", "moves": {}, "fetched_at": None}
+    tickers = list(dict.fromkeys(mv["ticker"] for mv in page["moves"]))[:max_tickers]
+
+    def one(t):
+        try:
+            return t, news.company_news(t, days=35)
+        except SourceError:
+            return t, None
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        by_ticker = {t: items for t, items in pool.map(one, tickers) if items is not None}
+    subset = [mv for mv in page["moves"] if mv["ticker"] in by_ticker]
+    attach_headlines(subset, by_ticker)
+    return {"live": bool(by_ticker), "provider": "Finnhub" if by_ticker else "snapshot",
+            "moves": {f"{mv['ticker']}|{mv['date']}": mv["headlines"] for mv in subset},
+            "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds") if by_ticker else None}
 
 
 def price_move(ticker: str, window: int = 30) -> dict:

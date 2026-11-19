@@ -165,27 +165,49 @@ def test_analyze_suggestions(client):
 
 def test_news(client):
     n = client.get("/api/news").json()
-    assert n["moves"] and n["events"] and n["sectors"] and n["headlines"] and n["as_of"]
+    assert n["moves"] and n["events"] and n["sectors"] and n["as_of"] and "headlines" not in n
     mv = n["moves"][0]
     assert {"headlines", "times_typical", "ret_1d", "excess_1d", "kind"} <= set(mv) and mv["times_typical"] > 1
     assert len(n["week"]["up"]) == 6 and n["week"]["up"][0]["ret_1w"] > n["week"]["down"][0]["ret_1w"]
-    assert len({h["headline"] for h in n["headlines"]}) == len(n["headlines"])     # each headline once
     live = client.get("/api/news/live").json()                                    # demo data: the saved headlines
-    assert live["live"] is False and live["market"]
+    assert live["live"] is False and live["moves"] == {}
 
 
-def test_headlines_are_matched_to_the_day_a_stock_moved():
+def test_headlines_are_matched_to_the_day_a_stock_moved_and_name_the_company():
     from tickertutor import views
 
-    moves = [{"ticker": "KO", "date": "2026-11-05"}, {"ticker": "PEP", "date": "2026-11-05"}]
-    feed = {"KO": [{"headline": "old", "published": "2026-10-20T12:00:00+00:00"},
-                   {"headline": "day after", "published": "2026-11-06T13:00:00+00:00"},
-                   {"headline": "evening before", "published": "2026-11-04T22:00:00+00:00"},
-                   {"headline": "a week later", "published": "2026-11-12T09:00:00+00:00"},
-                   {"headline": "no date", "published": ""}]}
-    views.attach_headlines(moves, feed)
-    assert [h["headline"] for h in moves[0]["headlines"]] == ["evening before", "day after"]
+    moves = [{"ticker": "KO", "name": "The Coca-Cola Company", "date": "2026-11-05"},
+             {"ticker": "PEP", "name": "PepsiCo", "date": "2026-11-05"}]
+    feed = {"KO": [{"headline": "Coca-Cola shares slide on old news", "published": "2026-10-20T12:00:00+00:00"},
+                   {"headline": "Coca-Cola (KO) falls after guidance cut", "published": "2026-11-06T13:00:00+00:00"},
+                   {"headline": "Coke sales slow in Latin America", "published": "2026-11-04T22:00:00+00:00"},
+                   {"headline": "Stock market today: Dow slips as yields climb", "published": "2026-11-05T21:00:00+00:00"},
+                   {"headline": "Premarket movers", "summary": "Coca-Cola fell 6% after...", "published": "2026-11-05T12:00:00+00:00"},
+                   {"headline": "Coca-Cola a week later", "published": "2026-11-12T09:00:00+00:00"},
+                   {"headline": "Coca-Cola no date", "published": ""}]}
+    views.attach_headlines(moves, feed, per_move=3)
+    # Around the day only, the ones naming the company in the headline first, never the market roundup.
+    assert [h["headline"] for h in moves[0]["headlines"]] == \
+        ["Coke sales slow in Latin America", "Coca-Cola (KO) falls after guidance cut", "Premarket movers"]
     assert moves[1]["headlines"] == []
+
+
+def test_news_feeds_drop_world_news_and_links_that_dont_open():
+    from tickertutor.sources import news
+
+    general = [{"headline": "Islam forecast to soon exceed Christianity as world's biggest faith - Reuters",
+                "url": "https://news.google.com/rss/articles/CBMi?oc=5"},
+               {"headline": "Wall St ends lower as hot inflation data heighten rate worries - Reuters",
+                "url": "https://news.google.com/rss/articles/abc"},
+               {"headline": "Measles is surging in the U.S.", "url": "https://www.cnbc.com/measles"},
+               {"headline": "Jim Cramer's top 10 things to watch in the stock market Wednesday", "url": "https://www.cnbc.com/x"}]
+    kept = [h for h in general if news._opens(h) and news.is_market_story(h)]
+    assert [h["headline"] for h in kept] == ["Jim Cramer's top 10 things to watch in the stock market Wednesday"]
+    assert news.mentions({"headline": "Nvidia Vs. AMD: neither is getting choked out"}, "Advanced Micro Devices", "AMD") == 2
+    assert news.mentions({"headline": "Why Is Dell Technologies (DELL) Talking Up AI Racks?"}, "Advanced Micro Devices", "AMD") == 0
+    assert news.mentions({"headline": "We all want lower rates"}, "The Allstate Corporation", "ALL") == 0
+    assert news.mentions({"headline": "Fed's target rate path"}, "Target Corporation", "TGT") == 0
+    assert news.name_keys("Alphabet Inc. (Class A)", "GOOGL") == ["Alphabet", "Google"]
 
 
 def test_chat_contract(client, fake_llm):

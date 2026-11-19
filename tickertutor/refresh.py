@@ -174,3 +174,7 @@ def _run(expected: str) -> None:
     _remember(expected, ok)
     with _lock:
         _state.update(state="idle" if ok else "failed", message=message, finished=time.time())
+    from . import preload   # new prices mean new example answers (and if nothing changed, this does nothing)
+
+    if preload.auto_enabled():
+        preload.warm()

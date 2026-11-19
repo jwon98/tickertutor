@@ -217,7 +217,9 @@ def test_news_moves_open_analyze_and_every_question_mark_has_a_card(server, page
     page.wait_for_selector(".move.link")
     ticker = page.inner_text(".move.link >> nth=0 >> .tick")
     assert page.locator(".page-news a.qmark").count() >= 10
-    page.wait_for_function("!document.querySelector('.head-stamp span').textContent.includes('Checking')")
+    page.wait_for_function("!document.querySelector('.head-stamp').textContent.includes('Checking')")
+    assert page.locator("text=Market headlines").count() == 0               # folded into Big moves lately
+    assert page.inner_text(".page-news aside .card >> nth=0").startswith("Biggest gains and losses")
     page.click(".move.link >> nth=0", position={"x": 200, "y": 10})
     page.wait_for_selector(".an-main .an-stats .stat")
     assert page.evaluate("location.hash").startswith(f"#/analyze?t={ticker}&a=moving_averages")
@@ -249,4 +251,28 @@ def test_research_desk_end_to_end(server, page):
     assert page.locator(".report .sources li").count() >= 1
     page.click(".report a.cite >> nth=0")
     assert page.evaluate("location.hash") == "#/research"            # citations don't navigate away
+    # The examples stay at the end of the conversation, and asking scrolls all the way down to the new question.
+    assert page.locator(".more-examples .more-list button").count() == 6
+    page.evaluate("window.scrollTo(0, 0)")
+    page.click(".more-examples .more-list button >> nth=1")
+    page.wait_for_function("""() => { const q = [...document.querySelectorAll('.q')].pop(), r = q.getBoundingClientRect();
+      const form = document.querySelector('form.ask').getBoundingClientRect();
+      return window.scrollY > 0 && r.top >= 0 && r.bottom <= form.top; }""")       # the new question is in view, above the box
+    assert page.locator(".q").count() == 2
+    page.wait_for_selector(".more-examples .more-list button", timeout=60000)  # hidden while it works, back once it's done
+    assert page.locator(".more-examples .more-list button").count() == 5     # the one just asked is gone
+    assert "Answers may take one to three minutes." in page.inner_text(".page-research .lede")
+    assert "won't tell you what to buy" not in page.inner_text(".page-research")
+    assert page.errors == []
+
+
+def test_back_to_top_on_long_pages(server, page):
+    page.goto(f"{server}/#/learn")
+    page.wait_for_selector(".term-find")
+    assert page.is_hidden(".to-top")
+    page.evaluate("window.scrollTo(0, document.documentElement.scrollHeight)")
+    page.wait_for_selector(".to-top", state="visible")
+    page.click(".to-top")
+    page.wait_for_function("window.scrollY < 5")
+    page.wait_for_selector(".to-top", state="hidden")
     assert page.errors == []

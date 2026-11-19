@@ -90,6 +90,11 @@ MAX_RESEARCHERS = _int("MAX_RESEARCHERS", 5)       # per round
 MAX_RESEARCHER_STEPS = _int("MAX_RESEARCHER_STEPS", 6)
 TIME_BUDGET_SECONDS = _int("TIME_BUDGET_SECONDS", 200)   # graders wait up to 5 minutes
 CHAT_RATE_PER_HOUR = _int("CHAT_RATE_PER_HOUR", 40)
+PRELOAD_WAIT_SECONDS = _int("PRELOAD_WAIT_SECONDS", 540)   # under Cloud Run's 600-second request timeout
+
+
+def running_on_cloud_run() -> bool:
+    return bool(os.environ.get("K_SERVICE"))
 
 LOCAL_USER = _env("LOCAL_USER", "local-dev")
 

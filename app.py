@@ -26,7 +26,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from starlette.concurrency import run_in_threadpool
 
-from tickertutor import agents, analysis, config, refresh, views
+from tickertutor import agents, analysis, config, preload, refresh, views
 from tickertutor.data import DataError, db
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -72,6 +72,10 @@ def healthz():
 @app.on_event("startup")
 def keep_data_fresh():
     refresh.tick()
+    # On your computer, prepare the example answers right away (unless new prices are on the way, in which case
+    # the update does it when it finishes). On Cloud Run the first visitor's page asks for it instead.
+    if preload.auto_enabled() and not config.running_on_cloud_run() and refresh.status()["state"] != "running":
+        preload.warm()
 
 
 @app.get("/api/data-status")
@@ -176,7 +180,7 @@ async def live_news(ticker: str):
         return {"articles": views.stock(t)["news"], "provider": "demo snapshot"}
     try:
         items = await run_in_threadpool(news_src.company_news, t, name, 14)
-        return {"articles": items[:12], "provider": items[0]["provider"] if items else ""}
+        return {"articles": news_src.about(items, name, t)[:12], "provider": items[0]["provider"] if items else ""}
     except SourceError as exc:
         return {"articles": views.stock(t)["news"], "provider": "snapshot", "note": str(exc)}
 
@@ -205,9 +209,27 @@ def _rate_limit(request: Request) -> None:
         q.append(now)
 
 
+@app.get("/api/research/examples")
+def research_examples():
+    ready = set(preload.status()["ready"])
+    return {"examples": [{"q": q, "sub": sub, "ready": q in ready} for q, sub in preload.EXAMPLES]}
+
+
+@app.post("/api/research/preload")
+async def research_preload():
+    """Prepare the example answers that aren't ready yet. The page sends this once when it opens and leaves it
+    open: on Cloud Run, an open request is what keeps the CPU running while the answers are prepared."""
+    if not preload.auto_enabled():
+        return {**preload.status(), "skipped": "Examples are prepared only with real data."}
+    return await run_in_threadpool(preload.warm, max(30, config.PRELOAD_WAIT_SECONDS))
+
+
 @app.post("/chat")
 async def chat(body: ChatIn, request: Request):
     """{"response", "session_id", "tool_calls": [{"agent", "name", "args", "result"}]}"""
+    ready = preload.answer_now(body.message, body.session_id)
+    if ready:
+        return ready
     _rate_limit(request)
     try:
         return await run_in_threadpool(agents.answer, body.message, body.session_id)
@@ -219,11 +241,14 @@ async def chat(body: ChatIn, request: Request):
 async def chat_stream(body: ChatIn, request: Request):
     """Server-sent events while the team works: plan, researcher_start, tool_call, researcher_done,
     review, writing, verified, then done (same payload as /chat plus the sources list)."""
-    _rate_limit(request)
+    if not preload.is_example(body.message):
+        _rate_limit(request)
     events: queue.Queue = queue.Queue()
 
     def work():
         try:
+            if preload.stream(body.message, body.session_id, events.put):
+                return   # an example: its prepared answer, replayed at a readable pace
             agents.answer(body.message, body.session_id, on_event=events.put)
         except Exception as exc:  # noqa: BLE001
             log.exception("chat failed")

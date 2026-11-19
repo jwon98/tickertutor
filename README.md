@@ -20,8 +20,8 @@ Someone new to investing who keeps hearing "it's above its 200-day average," "RS
 | **Analyze** | Starts with a search box and a few places to begin (the four indexes, this week's biggest movers, the largest companies), and shows nothing until you pick one. Then choose one of 13 analyses and a period (1 month to all history, or custom dates), adjust its settings, and get the chart(s), the key numbers, a plain-language readout, and an explanation: what it is, how it's calculated, how to read it, what to watch out for. Where a popular signal is involved, a "What history shows" panel gives its backtested track record across S&P 500 stocks. For an index, "performance" compares it with the other three indexes. |
 | **Stock** | Price chart (starts on year to date with just the price; ranges from 1 month to all history or custom dates, with optional 50-day and 200-day averages and the S&P 500), finances from SEC filings, returns vs the S&P 500 and the stock's sector fund, links to every analysis for that stock, risk numbers, earnings reactions, and news. Each term has a **?** that opens its definition on Learn. |
 | **Index** | The same layout for an index: chart, returns next to the other three indexes, every analysis, what the index is and what to keep in mind, risk numbers, and, for the S&P 500, its ten largest companies and their share of the index. |
-| **In the news** | Big one-day moves grouped by day, each with the headlines from around that day, how many times the stock's typical day it was, and links to open it on Analyze or ask the research desk why. Also what has historically followed moves like them, sector momentum, the week's and month's biggest gains and losses, and market headlines fetched fresh when the page opens. |
-| **Research desk** | Ask a question; watch the Lead, parallel Researchers, Writer, and Verifier work live; get a short cited report that ends with analyses to try yourself. |
+| **In the news** | Big one-day moves grouped by day, each with the headlines from around that day that name the company (stories tagged with the ticker but about the market or a rival are left out), how many times the stock's typical day it was, and links to open it on Analyze or ask the research desk why. Next to it, the week's and month's biggest gains and losses. Also what has historically followed moves like these and sector momentum. Headlines are fetched fresh when the page opens. |
+| **Research desk** | Ask a question; watch the Lead, parallel Researchers, Writer, and Verifier work live; get a short cited report that ends with analyses to try yourself. The example questions are researched ahead of time (see below), so they're ready in about ten seconds, and the other examples stay at the end of the conversation to try next. |
 | **Learn** | A card for each market index, the sectors, a searchable glossary of 80 terms in groups, including the words that show up in headlines (every **?** across the app links to one, and the card is highlighted when you arrive), how signals are backtested, taxes and the one-year mark, what the data can't tell you, and where the data comes from. |
 
 Each tab remembers what it was showing. Open AAPL from the Screener, look at something on Analyze, and the Screener tab takes you back to AAPL at the same scroll position. Clicking the tab you're already on returns to its start.
@@ -494,6 +494,17 @@ What the daily update does: downloads prices, market context (FRED), and headlin
 
 The update rewrites `data/tickertutor.duckdb`, so git will show it as changed. Commit and push it when you want the deployed app to ship with newer data (or use the bucket below so no commit is needed).
 
+### Example answers, ready ahead of time
+
+A full research answer takes one to three minutes, and the six example questions on the Research desk are the same for everyone. So the app researches each example once per data day and saves the result in `data/research_examples.json`: every step the team took and the final answer. Clicking an example replays those steps over about ten to fourteen seconds (the clarifying "What should I buy?" stays quick), then adds the answer to the conversation like any other, so follow-ups work. The answer's footer says it was researched ahead of time and on which day's data. Anything else you ask is researched live.
+
+When answers are prepared (with real data only, never the synthetic demo data):
+
+- **On your computer:** when the app starts, and again after each daily price update. With real Gemini this takes a few minutes in the background.
+- **Deployed:** the app uses the `research_examples.json` you committed, as long as it matches the database's date and the `GEMINI_MODEL`. If it doesn't, the first visitor's page sends one background request that stays open while the missing answers are prepared. On Cloud Run an open request is what keeps the CPU running. Someone who clicks an example while it's being prepared follows that same run instead of starting another.
+
+So when you commit a refreshed `data/tickertutor.duckdb`, commit `data/research_examples.json` with it (open the app locally first and give it a few minutes to prepare them). Set `PRELOAD_EXAMPLES=0` to turn this off.
+
 ## Deploy (Cloud Run, continuous deploy from GitHub)
 
 Follow the course guide *Deploying to Cloud Run from GitHub* with this repo. Run these once in your class project.
@@ -618,6 +629,8 @@ The job starts with an empty cache each time, so it first fetches the saved buil
 | `DATA_GCS_URI` | none | Load the database from Cloud Storage at startup, and switch to a newer upload within ten minutes |
 | `AUTO_REFRESH` | on locally, off on Cloud Run | `0` stops the app from updating prices by itself. `1` forces it on |
 | `REFRESH_UPLOAD_URI` | none | After each automatic update, also upload the database to this `gs://` address |
+| `PRELOAD_EXAMPLES` | on with real data | `0` stops the app from researching the example questions ahead of time. `1` turns it on even with the demo data |
+| `PRELOAD_WAIT_SECONDS` | `540` | How long the page's background request waits while example answers are prepared (keep it under the Cloud Run timeout) |
 | `MAX_ROUNDS`, `MAX_RESEARCHERS`, `MAX_RESEARCHER_STEPS`, `TIME_BUDGET_SECONDS` | 3, 5, 6, 200 | Research team limits |
 | `CHAT_RATE_PER_HOUR` | 40 | Questions per visitor per hour |
 
@@ -633,7 +646,9 @@ The job starts with an empty cache each time, so it first fetches the saved buil
 | `GET /api/indexes` | The four big indexes: recent returns, volatility, distance from the 52-week high, and a one-year sparkline |
 | `GET /api/indexes/{ticker}` | One index's page: description, snapshot, returns next to the other indexes, risk, and (S&P 500) largest companies |
 | `GET /api/overview`, `/api/stocks`, `/api/tickers` (index funds first, then companies), `/api/stocks/{ticker}`, `/api/stocks/{ticker}/prices?range=1m\|3m\|6m\|ytd\|1y\|3y\|5y\|max` (or `start`/`end`), `/api/suggestions`, `/api/news` | Page data |
-| `GET /api/news/live` | Fresh market headlines and headlines for each recent big move (cached 30 minutes; falls back to the saved ones) |
+| `GET /api/news/live` | Fresh headlines for each recent big move that name the company (cached 30 minutes; the page falls back to the saved ones) |
+| `GET /api/research/examples` | The Research desk's example questions and whether each answer is ready |
+| `POST /api/research/preload` | Prepare any example answers that aren't ready, and wait while that runs (the page sends this when it opens) |
 | `GET /api/data-status` | The data's date, the last finished trading day, and whether an update is running |
 
 ## Project layout
@@ -648,6 +663,7 @@ tickertutor/sectors.py      Plain-language descriptions of the 11 GICS sectors
 tickertutor/indexes.py      The four big indexes, the funds that track them, and their descriptions
 tickertutor/data.py         DuckDB access, safe read-only SQL, ticker checks, the one-year date rule
 tickertutor/refresh.py      Keeps prices current: the daily background update and switching to a newer database
+tickertutor/preload.py      Researches the example questions ahead of time and replays them at a readable pace
 tickertutor/stats.py        Report cards: monthly on/off comparison, block bootstrap, verdicts
 tickertutor/indicators.py   Moving averages, RSI, momentum, drawdowns, holding odds
 tickertutor/sources/        Wikipedia, prices (Alpaca/Tiingo/Stooq), SEC EDGAR, news, FRED clients

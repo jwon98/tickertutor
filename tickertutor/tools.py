@@ -303,11 +303,16 @@ def get_company_news(ctx, ticker: str, days: int = 14) -> dict:
         log.info("live news failed for %s: %s", t, exc)
     if not items:
         items = db().rows("SELECT headline, summary, source, url, published, provider FROM news WHERE ticker = ? "
-                          "ORDER BY published DESC LIMIT 10", [t])
+                          "ORDER BY published DESC LIMIT 30", [t])
         provider = "snapshot"
+    # Feeds tag market roundups and stories about rivals with this ticker too. Keep the ones that name the company.
+    found = len(items)
+    items = news.about(items, name, t)
     if not items:
-        return {"ok": True, "ticker": t, "provider": "", "articles": [],
-                "note": f"No news about {t} in the last {days} days from the live feed or the snapshot. Say so; don't guess."}
+        return {"ok": True, "ticker": t, "provider": provider, "articles": [],
+                "note": f"No headlines naming {name} ({t}) in the last {days} days"
+                        + (f" ({found} articles were tagged with the ticker but were about other companies or the market)"
+                           if found else "") + ". Say so; don't guess."}
     out = []
     for it in items[:10]:
         ref = ctx.sources.add("news", f"{it.get('source') or it.get('provider')}: {it['headline'][:140]}", it.get("url", ""),

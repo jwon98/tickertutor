@@ -70,6 +70,29 @@ async function boot() {
   });
   route();
   watchData();
+  backToTop();
+  // Have the research desk's example answers ready before anyone asks. The server prepares whatever's missing
+  // while this request stays open (on Cloud Run that's what keeps it working), and answers at once if all are ready.
+  if (!ctx.meta.synthetic) fetch("/api/research/preload", { method: "POST" }).catch(() => {});
+}
+
+// A button that appears once you're well down a long page (Learn, mostly) and takes you back to the top.
+function backToTop() {
+  const btn = el("button", { class: "to-top", type: "button", "aria-label": "Back to top", title: "Back to top", hidden: true,
+    html: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7"/></svg>',
+    onclick: () => {
+      window.scrollTo({ top: 0, behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+    } });
+  document.body.append(btn);
+  let ticking = false;
+  const update = () => {
+    ticking = false;
+    // Not on the research desk, where the question box sits at the bottom of the window.
+    const show = window.scrollY > Math.max(900, window.innerHeight * 1.5) && !/^#\/research/.test(location.hash);
+    btn.hidden = !show;
+  };
+  window.addEventListener("scroll", () => { if (!ticking) { ticking = true; requestAnimationFrame(update); } }, { passive: true });
+  window.addEventListener("hashchange", () => requestAnimationFrame(update));
 }
 
 function drawAsOf(note) {

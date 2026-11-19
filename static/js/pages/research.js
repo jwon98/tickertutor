@@ -1,6 +1,6 @@
 // Research desk: a Lead plans, Researchers work in parallel (fresh contexts), a Writer drafts a cited
 // report, and a Verifier checks it. The board on the right shows the team working, live.
-import { el } from "../api.js";
+import { api, el, dateStr } from "../api.js";
 import { markdown } from "../components.js";
 
 const ROLE = {
@@ -8,19 +8,16 @@ const ROLE = {
   fundamentals: { name: "Fundamentals researcher", tools: "SEC financials, valuation vs history, 10-K risk factors" },
   news: { name: "News researcher", tools: "company and market news, big moves and how unusual they were, earnings reactions, filings, web search" },
 };
-const EXAMPLES = [
-  ["Walk me through Microsoft's trend over the past year using moving averages and RSI, and compare its volatility with the S&P 500's.", "Runs analyses and explains how to read them"],
-  ["Why is Nvidia down so much lately?", "Pairs the headlines with how big and how unusual the move is"],
-  ["Does buying the dip work for S&P 500 stocks? What has happened after big one-day drops?", "Tests a popular belief against history"],
-  ["How do Coca-Cola and PepsiCo compare on volatility, drawdowns, and beta over the last five years?", "Side by side"],
-  ["How have the Nasdaq-100 and the Russell 2000 done against the S&P 500 over the past three years, and which swung more?", "The big indexes, compared"],
-  ["What should I buy?", "Ticker Tutor doesn't pick stocks: watch the Lead turn this into something you can analyze"],
-];
+// The examples come from the server (tickertutor/preload.py), which keeps their answers ready.
+let EXAMPLES = [];
 
 // Module state survives navigation, so a running answer keeps going if you visit another page.
 const S = { sid: null, turns: [], busy: false, nodes: null, activeBoard: null };
 
 export async function render(root, params) {
+  if (!EXAMPLES.length) {
+    try { EXAMPLES = (await api("/api/research/examples")).examples.map((x) => [x.q, x.sub]); } catch { EXAMPLES = []; }
+  }
   if (!S.nodes) S.nodes = build();
   const { page } = S.nodes;
   root.replaceChildren(page);
@@ -38,6 +35,7 @@ function build() {
   const reset = el("button", { class: "btn ghost small", type: "button", onclick: () => {
     if (S.busy) return;
     S.sid = null; S.turns = []; thread.replaceChildren(intro()); showBoard(howItWorks()); input.placeholder = "Ask about S&P 500 stocks, indexes, sectors, or signals…";
+    window.scrollTo({ top: 0 });
   } }, "New conversation");
   const form = el("form", { class: "ask", onsubmit: (e) => { e.preventDefault(); ask(input.value); } }, input, send);
   input.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); form.requestSubmit(); } });
@@ -47,7 +45,7 @@ function build() {
       el("h1", {}, "Research desk"),
       el("p", { class: "lede", style: { fontSize: "17px", maxWidth: "48em" } },
         "Ask a question in plain words. A small team of AI agents digs into Ticker Tutor's data, SEC filings, and the news, then writes a short report where every number links to its source. ",
-        "It explains the evidence. It won't tell you what to buy or sell. Answers take one to three minutes.")), reset),
+        "Answers may take one to three minutes.")), reset),
     el("div", { class: "desk" },
       el("div", {}, thread, el("div", { style: { position: "sticky", bottom: "0", background: "var(--paper)", paddingTop: "10px", paddingBottom: "6px" } }, form,
         el("p", { class: "small muted", style: { margin: "6px 2px 0" } }, "Enter to send, Shift+Enter for a new line. Follow-up questions remember the conversation."))),
@@ -62,6 +60,33 @@ function intro() {
     el("h2", { style: { fontSize: "19px" } }, "Try one of these"),
     el("div", { class: "examples", style: { marginTop: "12px" } }, ...EXAMPLES.map(([q, sub]) =>
       el("button", { type: "button", onclick: () => ask(q) }, q, el("small", {}, sub)))));
+}
+
+// After the first question, the other examples stay at the end of the conversation, so you can keep trying them.
+function moreExamples() {
+  const asked = new Set(S.turns.map((t) => t.q));
+  const left = EXAMPLES.filter(([q]) => !asked.has(q));
+  if (!left.length || S.busy) return null;   // shown again as soon as the current answer is done
+  return el("div", { class: "more-examples" },
+    el("h3", {}, S.turns.length ? "Try another example" : "Try one of these"),
+    el("div", { class: "more-list" }, ...left.map(([q]) => el("button", { type: "button", onclick: () => ask(q) }, q))));
+}
+
+function placeExamples() {
+  const { thread } = S.nodes;
+  thread.querySelector(".more-examples")?.remove();
+  const node = moreExamples();
+  if (node) thread.append(node);
+}
+
+// Scroll all the way down the conversation, so your question and the team's first step sit just above the box you
+// type in. (On phones the team's board comes after the conversation, so this isn't the bottom of the page.)
+function toBottom() {
+  requestAnimationFrame(() => {
+    const column = S.nodes.thread.parentElement;
+    const top = column.getBoundingClientRect().bottom + window.scrollY - window.innerHeight;
+    window.scrollTo({ top: Math.max(0, top), behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  });
 }
 
 function howItWorks() {
@@ -86,6 +111,7 @@ async function ask(text) {
   const { thread, input, send } = S.nodes;
   if (!q || S.busy) return;
   if (!S.turns.length) thread.replaceChildren();
+  thread.querySelector(".more-examples")?.remove();
   thread.querySelectorAll(".report.clarify .chip").forEach((b) => { b.disabled = true; });
   S.busy = true; send.disabled = true; input.value = ""; input.disabled = true;
   const turn = { q, board: liveBoard(), started: Date.now(), plan: null };
@@ -93,8 +119,9 @@ async function ask(text) {
   const answer = el("div", { class: "report working" }, el("p", { class: "status run" }, el("span", { class: "spin" }), " The Lead is reading your question…"));
   turn.answer = answer;
   thread.append(el("div", { class: "q" }, q), answer);
+  placeExamples();
   showBoard(turn.board.node);
-  answer.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  toBottom();
   try {
     await stream(q, (ev) => onEvent(turn, ev));
     if (!turn.done) throw new Error("The connection closed before the answer finished. Please try again.");
@@ -104,9 +131,10 @@ async function ask(text) {
       el("button", { class: "btn small", type: "button", onclick: () => ask(q) }, "Try again"));
     turn.board.fail(e.message);
   } finally {
-    S.busy = false; send.disabled = false; input.disabled = false; input.focus();
+    S.busy = false; send.disabled = false; input.disabled = false; input.focus({ preventScroll: true });
     turn.board.stop();
     input.placeholder = "Ask a follow-up…";
+    placeExamples();
   }
 }
 
@@ -187,12 +215,14 @@ function renderAnswer(turn, ev) {
   });
   const researchers = new Set(ev.tool_calls.filter((c) => c.agent.startsWith("researcher")).map((c) => c.agent)).size;
   const dataCalls = ev.tool_calls.filter((c) => c.agent.startsWith("researcher")).length;
-  const secs = Math.round((Date.now() - turn.started) / 1000);
+  const secs = Math.round(ev.prepared?.seconds ?? (Date.now() - turn.started) / 1000);
   const verified = ev.tool_calls.find((c) => c.name === "verify_report");
   const revised = ev.tool_calls.some((c) => c.name === "revise_report");
   a.replaceChildren(content, srcList,
     el("div", { class: "made" },
       el("span", {}, `${researchers} researcher${researchers === 1 ? "" : "s"} · ${dataCalls} data lookups · ${sources.length} sources · ${secs}s`),
+      ev.prepared ? el("span", { title: "Example questions are researched ahead of time, once per day of data, so they're ready when you click." },
+        `Researched ahead of time on data through ${dateStr(ev.prepared.as_of, { month: "short", day: "numeric" })}`) : "",
       verified ? el("span", {}, revised ? "Verifier found issues, Writer fixed them" : "Verifier checked the numbers") : "",
       el("button", { class: "btn small ghost", type: "button", onclick: () => showBoard(turn.board.node) }, "Show the team's work")));
 }

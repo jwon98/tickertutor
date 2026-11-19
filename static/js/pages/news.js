@@ -13,12 +13,15 @@ const HEADLINE_TERMS = ["beat-miss", "guidance", "priced-in", "analyst-rating", 
 
 // What the visitor last chose here, kept while they look at other tabs.
 const view = { kind: "all", horizon: "1m", movers: "week", more: false };
+// Headlines fetched for the big moves, reused for 30 minutes so switching tabs doesn't fetch them again.
+let fresh = null;
 
 export async function render(root, params, ctx) {
   const d = await api("/api/news");
   const m = d.market || {};
   const ev = groupEvents(d.events);
-  const live = {};   // "TICKER|date" → headlines fetched just now
+  let live = fresh && Date.now() - fresh.at < 30 * 60000 ? fresh.data : null;   // "TICKER|date" → fresh headlines
+  const stamp = el("span", { class: "head-stamp small muted" });
 
   // --- big moves ---------------------------------------------------------------------------------------------
   const movesBox = el("div");
@@ -36,7 +39,8 @@ export async function render(root, params, ctx) {
     let day = "";
     for (const mv of rows) {
       if (mv.date !== day) { day = mv.date; out.push(el("h3", { class: "move-day" }, dateStr(day, { weekday: "long", month: "short", day: "numeric" }))); }
-      out.push(moveRow(mv, live[`${mv.ticker}|${mv.date}`] || mv.headlines || []));
+      const got = live?.moves?.[`${mv.ticker}|${mv.date}`];
+      out.push(moveRow(mv, got?.length ? got : mv.headlines || []));
     }
     if (all.length > 8) out.push(el("button", { class: "btn small ghost", type: "button", style: { marginTop: "8px" },
       onclick: () => { view.more = !view.more; drawMoves(); } }, view.more ? "Show fewer" : `Show all ${all.length}`));
@@ -80,31 +84,20 @@ export async function render(root, params, ctx) {
   }
   drawMovers();
 
-  // --- headlines (fetched fresh) ---------------------------------------------------------------------------------
-  const headBox = el("ul", { class: "news-list" });
-  const stamp = el("span", { class: "small muted" }, "Checking for new headlines…");
-  const again = el("button", { class: "btn small ghost", type: "button", onclick: () => refresh() }, "Check again");
-  function drawHeadlines(items) {
-    headBox.replaceChildren(...(items.length ? items.slice(0, 14).map((h) => el("li", {},
-      el("a", { href: h.url, target: "_blank", rel: "noopener" }, h.headline),
-      el("small", {}, h.ticker && h.ticker !== "_market" ? [el("a", { class: "tick", href: analyzeHref(h.ticker), style: { marginRight: "6px" } }, h.ticker)] : "",
-        `${h.source || h.provider || ""} · ${when(h.published)}`))) : [el("li", { class: "muted" }, "No headlines available right now.")]));
+  // --- headlines for the moves (fetched fresh, once per half hour) --------------------------------------------------
+  function drawStamp(n) {
+    stamp.textContent = !n ? "Checking for the latest headlines…"
+      : n.live ? `Headlines checked ${new Date(n.fetched_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
+        : `Headlines saved with the data on ${dateStr(d.built_at, { month: "short", day: "numeric" })}`;
   }
-  drawHeadlines(d.headlines);
-  async function refresh() {
-    again.disabled = true;
-    try {
-      const n = await api("/api/news/live");
-      if (!root.isConnected) return;
-      Object.assign(live, n.moves || {});
-      if (n.market?.length) drawHeadlines(n.market);
+  drawStamp(live);
+  if (!live) {
+    api("/api/news/live").then((n) => {
+      fresh = { at: Date.now(), data: n };
+      live = n;
+      drawStamp(n);
       drawMoves();
-      stamp.textContent = n.live ? `Live from ${n.provider}, checked ${new Date(n.fetched_at).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}`
-        : `Saved with the last data update (${dateStr(d.built_at, { month: "short", day: "numeric" })})`;
-    } catch {
-      stamp.textContent = "Couldn't reach the news feed. Showing saved headlines.";
-    }
-    again.disabled = false;
+    }).catch(() => { stamp.textContent = "Couldn't reach the news feed. Showing the headlines saved with the data."; });
   }
 
   root.replaceChildren(
@@ -125,7 +118,8 @@ export async function render(root, params, ctx) {
         el("div", { class: "card" },
           el("div", { class: "chart-controls" }, el("h2", {}, "Big moves lately", learnLink("big-move")), kindSeg),
           el("p", { class: "muted small", style: { margin: "0 0 4px" } }, "Days when a stock moved at least 5 points more or less than the S&P 500", learnLink("excess-return"),
-            ", with the headlines from around that day. Click one to open it on the Analyze tab."),
+            ", with headlines from around that day that name the company. Click one to open it on the Analyze tab."),
+          stamp,
           movesBox, baseNote(ev)),
         el("div", { class: "card" }, el("h2", {}, "What usually happens next?", learnLink("base-rate")),
           el("p", { class: "muted small", style: { margin: "4px 0 12px" } }, "Every move like these in Ticker Tutor's history, and how those stocks did against the S&P 500 afterwards",
@@ -133,23 +127,14 @@ export async function render(root, params, ctx) {
           el("div", { class: "grid g2" }, ...Object.entries(ev).map(([k, rows]) => eventCard(k, rows)))),
         el("div", { class: "card" }, el("div", { class: "chart-controls" }, el("h2", {}, "Sectors", learnLink("sector")), hseg), sectorBox)),
       el("aside", {},
-        el("div", { class: "card" }, el("h3", {}, "Market headlines"),
-          el("div", { class: "head-stamp" }, stamp, again), headBox),
         el("div", { class: "card" }, el("div", { class: "chart-controls", style: { alignItems: "center" } }, el("h3", {}, "Biggest gains and losses"), mseg), moversBox),
         el("div", { class: "card" }, el("h3", {}, "Words you'll see in headlines"),
           el("p", { class: "related-terms", style: { margin: "10px 0 0" } }, ...HEADLINE_TERMS.map((id) => termLink(id)))))));
-  refresh();
 }
 
 const analyzeHref = (t, a = "moving_averages", p = "3m") => `#/analyze?t=${encodeURIComponent(t)}&a=${a}&p=${p}`;
 
-function when(iso) {
-  if (!iso) return "";
-  const t = new Date(iso), hours = (Date.now() - t) / 36e5;
-  if (hours >= 0 && hours < 1) return `${Math.max(1, Math.round(hours * 60))} min ago`;
-  if (hours >= 1 && hours < 20) return `${Math.round(hours)} hr ago`;
-  return dateStr(iso, { month: "short", day: "numeric" });
-}
+const shortName = (n) => (n || "this company").replace(/^The /, "").replace(/,? (Inc\.?|Corporation|Company|Corp\.?|plc|Ltd\.?)$/i, "").replace(/ \(Class [A-Z]\)$/, "");
 
 function groupEvents(rows) {
   const out = {};
@@ -192,7 +177,7 @@ function moveRow(mv, headlines) {
       headlines.length ? el("ul", { class: "move-news" }, ...headlines.map((h) => el("li", {},
         el("a", { href: h.url, target: "_blank", rel: "noopener", onclick: stop }, h.headline),
         el("small", {}, ` ${h.source || h.provider || ""}, ${dateStr(h.published, { month: "short", day: "numeric" })}`))))
-        : el("div", { class: "small muted move-none" }, "No headline found around that day."),
+        : el("div", { class: "small muted move-none" }, `No headline naming ${shortName(mv.name)} around that day.`),
       el("div", { class: "small muted move-facts" },
         mv.times_typical ? [el("span", {}, `${num(mv.times_typical, 1)}× its typical day`, learnLink("typical-daily-move"))] : "",
         el("span", {}, `${pct(mv.dist_52w_high, 0)} from its high`, learnLink("52-week-high")),
